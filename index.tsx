@@ -9,9 +9,16 @@ import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 import { FluxDispatcher } from "@webpack/common";
 
-let currentIP: string | null = null;
-let currentPort: number | null = null;
-let currentEndpoint: string | null = null;
+interface ConnectionInfo {
+    ip: string;
+    port: number;
+    endpoint: string | null;
+}
+
+let voiceInfo: ConnectionInfo | null = null;
+let streamInfo: ConnectionInfo | null = null;
+let voiceEndpoint: string | null = null;
+let streamEndpoint: string | null = null;
 let OriginalWebSocket: typeof WebSocket | null = null;
 
 const settings = definePluginSettings({
@@ -55,47 +62,81 @@ function copyToClipboard(text: string) {
     }
 }
 
-function handleVoiceIP(ip: string, port: number) {
-    const isNew = currentIP === null;
-    const changed = currentIP !== null && ip !== currentIP;
+function formatInfo(info: ConnectionInfo): string {
+    return `${info.ip}:${info.port}${info.endpoint ? `\n${info.endpoint}` : ""}`;
+}
 
-    currentIP = ip;
-    currentPort = port;
+function handleServerIP(ip: string, port: number, type: "Voice" | "Stream", endpoint: string | null) {
+    const prev = type === "Voice" ? voiceInfo : streamInfo;
+    const isNew = prev === null;
+    const changed = prev !== null && ip !== prev.ip;
 
-    log(`Voice Server IP: ${ip}:${port}${currentEndpoint ? ` (${currentEndpoint})` : ""}`);
+    const info: ConnectionInfo = { ip, port, endpoint };
+
+    if (type === "Voice") voiceInfo = info;
+    else streamInfo = info;
+
+    log(`${type} Server IP: ${ip}:${port}${endpoint ? ` (${endpoint})` : ""}`);
 
     const shouldNotify = isNew
         ? settings.store.notifyOnConnect
         : changed && settings.store.notifyOnChange;
 
     if (shouldNotify) {
+        const title = type === "Stream"
+            ? (changed ? "Stream Server Changed" : "Stream Server Connected")
+            : (changed ? "Voice Server Changed" : "Voice Server Connected");
+
         showNotification({
-            title: changed ? "Voice Server Changed" : "Voice Server Connected",
-            body: `IP: ${ip}:${port}${currentEndpoint ? `\nEndpoint: ${currentEndpoint}` : ""}`,
-            onClick: () => {
-                const text = `${ip}:${port}${currentEndpoint ? `\n${currentEndpoint}` : ""}`;
-                copyToClipboard(text);
-            },
+            title,
+            body: `IP: ${ip}:${port}${endpoint ? `\nEndpoint: ${endpoint}` : ""}`,
+            onClick: () => copyToClipboard(formatInfo(info)),
         });
     }
 
     if (settings.store.autoCopy && (isNew || changed)) {
-        const text = `${ip}:${port}${currentEndpoint ? `\n${currentEndpoint}` : ""}`;
-        copyToClipboard(text);
-        log("IP and endpoint copied to clipboard");
+        copyToClipboard(formatInfo(info));
+        log(`${type} IP and endpoint copied to clipboard`);
     }
+}
+
+function detectConnectionType(wsUrl: string): "Voice" | "Stream" {
+    if (streamEndpoint && wsUrl.includes(streamEndpoint.split(":")[0])) {
+        return "Stream";
+    }
+    return "Voice";
 }
 
 function handleVoiceServerUpdate(event: any) {
     if (event.endpoint) {
-        currentEndpoint = event.endpoint;
+        voiceEndpoint = event.endpoint;
         log(`Voice endpoint: ${event.endpoint}`);
     } else {
         log("Disconnected from voice server");
-        currentIP = null;
-        currentPort = null;
-        currentEndpoint = null;
+        voiceInfo = null;
+        voiceEndpoint = null;
     }
+}
+
+function handleStreamServerUpdate(event: any) {
+    if (event.endpoint) {
+        streamEndpoint = event.endpoint;
+        log(`Stream endpoint: ${event.endpoint}`);
+    } else {
+        log("Disconnected from stream server");
+        streamInfo = null;
+        streamEndpoint = null;
+    }
+}
+
+function handleStreamCreate(event: any) {
+    log(`Stream started: ${event.streamKey ?? "unknown"}`);
+}
+
+function handleStreamDelete(event: any) {
+    log(`Stream ended: ${event.streamKey ?? "unknown"}`);
+    streamInfo = null;
+    streamEndpoint = null;
 }
 
 function patchWebSocket() {
@@ -106,22 +147,21 @@ function patchWebSocket() {
             const ws = Reflect.construct(target, args, newTarget);
             const url = String(args[0] ?? "");
 
-            // Voice WebSockets connect to *.discord.gg or *.discord.media
-            // Gateway WebSockets contain "gateway" in the URL — exclude them
             const isVoice =
                 (url.includes(".discord.gg") || url.includes(".discord.media")) &&
                 !url.includes("gateway");
 
             if (isVoice) {
-                log(`Voice WebSocket opened: ${url}`);
+                const type = detectConnectionType(url);
+                log(`${type} WebSocket opened: ${url}`);
 
                 ws.addEventListener("message", (event: MessageEvent) => {
                     if (typeof event.data !== "string") return;
                     try {
                         const data = JSON.parse(event.data);
-                        // Opcode 2 = Ready — contains the voice server IP and port
                         if (data.op === 2 && data.d?.ip) {
-                            handleVoiceIP(data.d.ip, data.d.port);
+                            const endpoint = type === "Stream" ? streamEndpoint : voiceEndpoint;
+                            handleServerIP(data.d.ip, data.d.port, type, endpoint);
                         }
                     } catch {
                         // Binary frame or non-JSON — ignore
@@ -133,7 +173,6 @@ function patchWebSocket() {
         },
     }) as unknown as typeof WebSocket;
 
-    // Preserve prototype identity so instanceof checks keep working
     Object.defineProperty(window.WebSocket, "prototype", {
         value: OriginalWebSocket.prototype,
         writable: false,
@@ -148,48 +187,104 @@ function unpatchWebSocket() {
     }
 }
 
+function buildInfoMessage(): string {
+    const sections: string[] = [];
+
+    if (voiceInfo) {
+        sections.push([
+            "### Voice Server",
+            `**IP:** \`${voiceInfo.ip}\``,
+            `**Port:** \`${voiceInfo.port}\``,
+            `**Endpoint:** \`${voiceInfo.endpoint ?? "N/A"}\``,
+        ].join("\n"));
+    }
+
+    if (streamInfo) {
+        sections.push([
+            "### Stream Server",
+            `**IP:** \`${streamInfo.ip}\``,
+            `**Port:** \`${streamInfo.port}\``,
+            `**Endpoint:** \`${streamInfo.endpoint ?? "N/A"}\``,
+        ].join("\n"));
+    }
+
+    if (sections.length === 0) return "Not currently connected to any voice/stream server.";
+
+    sections.push(`**Timestamp:** ${new Date().toLocaleString()}`);
+    return sections.join("\n\n");
+}
+
 export default definePlugin({
     name: "VoiceServerInfo",
-    description: "Shows the voice server IP/endpoint when connected to a voice channel",
+    description: "Shows the voice/stream server IP and endpoint when connected to a voice channel or screen share",
     authors: [{ name: "overocai", id: 1288832011452153910n }],
     settings,
 
     commands: [
         {
             name: "voiceip",
-            description: "Show the current voice server IP address",
+            description: "Show the current voice/stream server IP address",
             inputType: ApplicationCommandInputType.BUILT_IN,
             execute: (_args, ctx) => {
-                if (currentIP) {
+                sendBotMessage(ctx.channel.id, { content: buildInfoMessage() });
+            },
+        },
+        {
+            name: "copyvoiceip",
+            description: "Copy all server IPs to clipboard",
+            inputType: ApplicationCommandInputType.BUILT_IN,
+            execute: (_args, ctx) => {
+                const parts: string[] = [];
+                if (voiceInfo) parts.push(`Voice: ${formatInfo(voiceInfo)}`);
+                if (streamInfo) parts.push(`Stream: ${formatInfo(streamInfo)}`);
+
+                if (parts.length > 0) {
+                    copyToClipboard(parts.join("\n\n"));
                     sendBotMessage(ctx.channel.id, {
-                        content: [
-                            "### Voice Server Info",
-                            `**IP:** \`${currentIP}\``,
-                            `**Port:** \`${currentPort}\``,
-                            `**Endpoint:** \`${currentEndpoint ?? "N/A"}\``,
-                            `**Timestamp:** ${new Date().toLocaleString()}`,
-                        ].join("\n"),
+                        content: "Copied all server info to clipboard.",
                     });
                 } else {
                     sendBotMessage(ctx.channel.id, {
-                        content: "Not currently connected to a voice server.",
+                        content: "Not currently connected to any voice/stream server.",
                     });
                 }
             },
         },
         {
-            name: "copyvoiceip",
-            description: "Copy the current voice server IP to clipboard",
+            name: "streamip",
+            description: "Show the current stream/screen share server IP",
             inputType: ApplicationCommandInputType.BUILT_IN,
             execute: (_args, ctx) => {
-                if (currentIP) {
-                    copyToClipboard(currentIP);
+                if (streamInfo) {
                     sendBotMessage(ctx.channel.id, {
-                        content: `Copied \`${currentIP}\` to clipboard.`,
+                        content: [
+                            "### Stream Server",
+                            `**IP:** \`${streamInfo.ip}\``,
+                            `**Port:** \`${streamInfo.port}\``,
+                            `**Endpoint:** \`${streamInfo.endpoint ?? "N/A"}\``,
+                            `**Timestamp:** ${new Date().toLocaleString()}`,
+                        ].join("\n"),
                     });
                 } else {
                     sendBotMessage(ctx.channel.id, {
-                        content: "Not currently connected to a voice server.",
+                        content: "No active screen share or stream.",
+                    });
+                }
+            },
+        },
+        {
+            name: "copystreamip",
+            description: "Copy the current stream server IP to clipboard",
+            inputType: ApplicationCommandInputType.BUILT_IN,
+            execute: (_args, ctx) => {
+                if (streamInfo) {
+                    copyToClipboard(formatInfo(streamInfo));
+                    sendBotMessage(ctx.channel.id, {
+                        content: "Copied stream server info to clipboard.",
+                    });
+                } else {
+                    sendBotMessage(ctx.channel.id, {
+                        content: "No active screen share or stream.",
                     });
                 }
             },
@@ -198,16 +293,23 @@ export default definePlugin({
 
     start() {
         FluxDispatcher.subscribe("VOICE_SERVER_UPDATE", handleVoiceServerUpdate);
+        FluxDispatcher.subscribe("STREAM_SERVER_UPDATE", handleStreamServerUpdate);
+        FluxDispatcher.subscribe("STREAM_CREATE", handleStreamCreate);
+        FluxDispatcher.subscribe("STREAM_DELETE", handleStreamDelete);
         patchWebSocket();
         log("Plugin started");
     },
 
     stop() {
         FluxDispatcher.unsubscribe("VOICE_SERVER_UPDATE", handleVoiceServerUpdate);
+        FluxDispatcher.unsubscribe("STREAM_SERVER_UPDATE", handleStreamServerUpdate);
+        FluxDispatcher.unsubscribe("STREAM_CREATE", handleStreamCreate);
+        FluxDispatcher.unsubscribe("STREAM_DELETE", handleStreamDelete);
         unpatchWebSocket();
-        currentIP = null;
-        currentPort = null;
-        currentEndpoint = null;
+        voiceInfo = null;
+        streamInfo = null;
+        voiceEndpoint = null;
+        streamEndpoint = null;
         log("Plugin stopped");
     },
 });
