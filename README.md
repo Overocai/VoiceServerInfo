@@ -1,41 +1,64 @@
+<div align="center">
+
 # VoiceServerInfo
 
-Equicord plugin that shows the voice server IP and endpoint when connected to a voice channel.
+**Real-time voice server monitoring for Equicord**
+
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Equicord](https://img.shields.io/badge/Equicord-plugin-5865F2.svg)](https://github.com/Equicord/Equicord)
+
+---
+
+Get instant notifications with the **IP**, **port**, and **endpoint** of every Discord voice server you connect to. One click to copy everything.
+
+</div>
 
 ## Features
 
-- Desktop notification with IP and endpoint on voice server connect
-- Notification on voice server change (e.g. region switch)
-- Click notification to copy IP and endpoint to clipboard
-- Auto-copy option on connection
-- `/voiceip` command to display current voice server info
-- `/copyvoiceip` command to copy IP to clipboard
-- Console logging with timestamps
-
-## Settings
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| notifyOnConnect | `true` | Show notification when connected |
-| notifyOnChange | `true` | Show notification on server change |
-| autoCopy | `false` | Auto copy IP + endpoint on connection |
-| logToConsole | `true` | Log info to developer console |
+| Feature | Description |
+|---------|-------------|
+| **Live Notifications** | Instant desktop alert with full server details on connect |
+| **Change Detection** | Detects region switches and server migrations in real-time |
+| **One-Click Copy** | Click the notification to copy IP + endpoint to clipboard |
+| **Auto Copy** | Optionally copy server info automatically on every connection |
+| **Slash Commands** | `/voiceip` to view info, `/copyvoiceip` to copy instantly |
+| **Console Logging** | Timestamped logs in DevTools for debugging and tracking |
 
 ## Installation
 
-Clone this repo into your Equicord `src/userplugins/` directory:
-
 ```bash
+cd src/userplugins
 git clone https://github.com/Overocai/VoiceServerInfo.git
-```
-
-Then rebuild:
-
-```bash
 pnpm build
 ```
 
 ## Commands
 
-- `/voiceip` — Shows the current voice server IP, port, endpoint, and timestamp in chat (only visible to you).
-- `/copyvoiceip` — Copies the current voice server IP to your clipboard.
+| Command | Description |
+|---------|-------------|
+| `/voiceip` | Display current voice server IP, port, endpoint and timestamp |
+| `/copyvoiceip` | Copy the current voice server IP to clipboard |
+
+## Settings
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `notifyOnConnect` | `true` | Notification when voice server is detected |
+| `notifyOnChange` | `true` | Notification when server changes (region switch) |
+| `autoCopy` | `false` | Auto copy IP + endpoint to clipboard |
+| `logToConsole` | `true` | Log voice server info to developer console |
+
+## How It Works
+
+1. Intercepts Discord voice WebSocket connections via `Proxy`
+2. Captures the **Ready** payload (opcode 2) containing server IP and port
+3. Tracks endpoint changes through Discord's `VOICE_SERVER_UPDATE` Flux event
+4. Delivers the information through notifications, commands, and console logs
+
+---
+
+<div align="center">
+
+**Made by [Overocai](https://github.com/Overocai)**
+
+</div>
